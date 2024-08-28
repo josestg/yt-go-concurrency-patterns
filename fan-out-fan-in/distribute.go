@@ -60,31 +60,33 @@ func main() {
 	// Elapsed: 2.401358083s
 }
 
-func Distribute(
-	source <-chan int64,
-	task func(source <-chan int64) <-chan fib,
+// Distribute distributes the input stream to multiple workers.
+func Distribute[InpStream ~<-chan T, OutStream ~<-chan U, T, U any](
+	s InpStream,
+	worker func(s InpStream) OutStream,
 	replicas int,
-) <-chan fib {
-	consumers := make([]<-chan fib, replicas)
+) OutStream {
+	consumers := make([]OutStream, replicas)
 	for i := 0; i < replicas; i++ {
-		consumers[i] = task(source)
+		consumers[i] = worker(s)
 	}
 	return Merge(consumers...)
 }
 
-func Merge(in ...<-chan fib) <-chan fib {
+// Merge merges multiple streams into a single stream.
+func Merge[Stream ~<-chan T, T any](sources ...Stream) Stream {
 	var wg sync.WaitGroup
 
-	out := make(chan fib)
-	worker := func(ch <-chan fib) {
+	out := make(chan T)
+	worker := func(ch Stream) {
 		defer wg.Done()
 		for v := range ch {
 			out <- v
 		}
 	}
 
-	wg.Add(len(in))
-	for _, stream := range in {
+	wg.Add(len(sources))
+	for _, stream := range sources {
 		go worker(stream)
 	}
 
