@@ -57,8 +57,16 @@ func Pipeline[T any](ctx context.Context, source <-chan T, operators ...Operator
 var _ TerminalOperator[any] = ForEach
 
 func ForEach[T any](ctx context.Context, in <-chan T) {
-	for v := range in {
-		println(v)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case v, ok := <-in:
+			if !ok {
+				return
+			}
+			println(v)
+		}
 	}
 }
 
