@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -18,36 +19,50 @@ func SlowFibonacci(n int64) int64 {
 type fib struct{ n, result int64 }
 
 // NewFibonacciStream creates a stream of Fibonacci numbers.
-func NewFibonacciStream(in <-chan int64) <-chan fib {
+func NewFibonacciStream(ctx context.Context, in <-chan int64) <-chan fib {
 	out := make(chan fib)
 	go func() {
 		defer close(out)
-		for v := range in {
-			out <- fib{
-				n:      v,
-				result: SlowFibonacci(v),
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case n, ok := <-in:
+				if !ok {
+					return
+				}
+				out <- fib{n: n, result: SlowFibonacci(n)}
 			}
 		}
 	}()
 	return out
 }
 
-func StreamOf[T any](seq ...T) <-chan T {
+// StreamOf creates a stream of items of type T.
+func StreamOf[T any](ctx context.Context, seq ...T) <-chan T {
 	stream := make(chan T)
 	go func() {
 		defer close(stream)
-		for _, v := range seq {
-			stream <- v
+		for _, item := range seq {
+			select {
+			case <-ctx.Done():
+				return
+			case stream <- item:
+			}
+
 		}
 	}()
 	return stream
 }
 
 func main() {
-	stream := StreamOf[int64](40, 41, 42, 43, 44)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream := StreamOf[int64](ctx, 40, 41, 42, 43, 44)
 	started := time.Now()
 
-	for v := range Distribute(stream, NewFibonacciStream, 5) {
+	for v := range Distribute(ctx, stream, NewFibonacciStream, 2) {
 		fmt.Printf("%+v\n", v)
 	}
 	fmt.Printf("Elapsed: %v\n", time.Since(started))
@@ -62,26 +77,35 @@ func main() {
 
 // Distribute distributes the input stream to multiple workers.
 func Distribute[InpStream ~<-chan T, OutStream ~<-chan U, T, U any](
+	ctx context.Context,
 	s InpStream,
-	worker func(s InpStream) OutStream,
+	worker func(ctx context.Context, s InpStream) OutStream,
 	replicas int,
 ) OutStream {
 	consumers := make([]OutStream, replicas)
 	for i := 0; i < replicas; i++ {
-		consumers[i] = worker(s)
+		consumers[i] = worker(ctx, s)
 	}
-	return Merge(consumers...)
+	return Merge(ctx, consumers...)
 }
 
 // Merge merges multiple streams into a single stream.
-func Merge[Stream ~<-chan T, T any](sources ...Stream) Stream {
+func Merge[Stream ~<-chan T, T any](ctx context.Context, sources ...Stream) Stream {
 	var wg sync.WaitGroup
-
 	out := make(chan T)
+
 	worker := func(ch Stream) {
 		defer wg.Done()
-		for v := range ch {
-			out <- v
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case v, ok := <-ch:
+				if !ok {
+					return
+				}
+				out <- v
+			}
 		}
 	}
 
